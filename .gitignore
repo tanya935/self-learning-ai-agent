@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+memory.json
+learning.json
+corrections.json
+.env
