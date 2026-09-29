@@ -10,7 +10,8 @@ def load_memory():
     if not os.path.exists(MEMORY_FILE):
         return {
             "conversations": [],
-            "facts": []
+            "facts": [],
+            "knowledge": []
         }
 
     try:
@@ -18,23 +19,38 @@ def load_memory():
         with open(MEMORY_FILE, "r") as file:
             memory = json.load(file)
 
-        # Agar purana format list hai
+        # Old memory.json compatibility
         if isinstance(memory, list):
-
             return {
                 "conversations": memory,
-                "facts": []
+                "facts": [],
+                "knowledge": []
             }
+
+        # If knowledge section does not exist
+        if "knowledge" not in memory:
+            memory["knowledge"] = []
+
+        if "facts" not in memory:
+            memory["facts"] = []
+
+        if "conversations" not in memory:
+            memory["conversations"] = []
 
         return memory
 
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
 
         return {
             "conversations": [],
-            "facts": []
+            "facts": [],
+            "knowledge": []
         }
 
+
+# -------------------------
+# Conversation Memory
+# -------------------------
 
 def save_conversation(user_input, agent_response):
 
@@ -46,8 +62,24 @@ def save_conversation(user_input, agent_response):
     })
 
     with open(MEMORY_FILE, "w") as file:
-        json.dump(memory, file, indent=4)
 
+        json.dump(
+            memory,
+            file,
+            indent=4
+        )
+
+
+def get_recent_memory(limit=10):
+
+    memory = load_memory()
+
+    return memory["conversations"][-limit:]
+
+
+# -------------------------
+# Personal Facts
+# -------------------------
 
 def save_fact(fact):
 
@@ -58,14 +90,12 @@ def save_fact(fact):
         memory["facts"].append(fact)
 
     with open(MEMORY_FILE, "w") as file:
-        json.dump(memory, file, indent=4)
 
-
-def get_recent_memory(limit=10):
-
-    memory = load_memory()
-
-    return memory["conversations"][-limit:]
+        json.dump(
+            memory,
+            file,
+            indent=4
+        )
 
 
 def get_facts():
@@ -73,3 +103,78 @@ def get_facts():
     memory = load_memory()
 
     return memory["facts"]
+
+
+# -------------------------
+# General Knowledge Memory
+# -------------------------
+
+def save_knowledge(statement, topic=""):
+
+    memory = load_memory()
+
+    # Prevent duplicate knowledge
+    for item in memory["knowledge"]:
+
+        if item.get("statement", "").lower().strip() == statement.lower().strip():
+
+            return
+
+    memory["knowledge"].append({
+        "statement": statement,
+        "topic": topic,
+        "source": "user"
+    })
+
+    with open(MEMORY_FILE, "w") as file:
+
+        json.dump(
+            memory,
+            file,
+            indent=4
+        )
+
+
+def get_knowledge():
+
+    memory = load_memory()
+
+    return memory["knowledge"]
+
+
+def search_knowledge(query):
+
+    memory = load_memory()
+
+    query_words = query.lower().split()
+
+    matches = []
+
+    for item in memory["knowledge"]:
+
+        statement = item.get("statement", "").lower()
+        topic = item.get("topic", "").lower()
+
+        text = statement + " " + topic
+
+        score = 0
+
+        for word in query_words:
+
+            if len(word) > 2 and word in text:
+                score += 1
+
+        if score > 0:
+
+            matches.append({
+                "statement": item.get("statement", ""),
+                "topic": item.get("topic", ""),
+                "score": score
+            })
+
+    matches.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    return matches[:5]

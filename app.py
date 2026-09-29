@@ -5,95 +5,656 @@ from ollama import chat
 
 from calculator import calculator
 from web_search import search
-from memory import load_memory, save_conversation
-from evaluator import evaluate_response
-from learning import save_learning, get_good_learning
-from corrections import save_correction, get_corrections
 
+from memory import (
+    load_memory,
+    save_conversation,
+    save_fact,
+    get_recent_memory,
+    get_facts,
+    save_knowledge,
+    get_knowledge,
+    search_knowledge
+)
+
+from evaluator import evaluate_response
+
+from learning import (
+    save_learning,
+    get_good_learning
+)
+
+from corrections import (
+    save_correction,
+    get_corrections
+)
+
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
 
 MODEL = "llama3.2"
 
 
-# ============================================
-# PAGE SETTINGS
-# ============================================
+# =========================================================
+# AUTOMATIC KNOWLEDGE EXTRACTION
+# =========================================================
+
+def extract_knowledge(user_input):
+
+    prompt = f"""
+You are a knowledge extraction system.
+
+Analyze the user's message and decide whether it contains
+a useful factual statement that should be remembered for
+future questions.
+
+Save only useful factual information.
+
+Do NOT save:
+
+- questions
+- greetings
+- casual conversation
+- temporary feelings
+- opinions
+- commands
+- corrections
+- random conversation
+
+Examples:
+
+User:
+Python was created by Guido van Rossum.
+
+Output:
+{{
+    "remember": true,
+    "statement": "Python was created by Guido van Rossum.",
+    "topic": "Python"
+}}
+
+User:
+I am tired today.
+
+Output:
+{{
+    "remember": false,
+    "statement": "",
+    "topic": ""
+}}
+
+User:
+What is Python?
+
+Output:
+{{
+    "remember": false,
+    "statement": "",
+    "topic": ""
+}}
+
+User:
+I think Python is the best language.
+
+Output:
+{{
+    "remember": false,
+    "statement": "",
+    "topic": ""
+}}
+
+User message:
+{user_input}
+
+Return ONLY valid JSON.
+"""
+
+    try:
+
+        response = chat(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        content = response["message"]["content"].strip()
+
+        content = content.replace("```json", "")
+        content = content.replace("```", "")
+        content = content.strip()
+
+        result = json.loads(content)
+
+        return result
+
+    except Exception:
+
+        return {
+            "remember": False,
+            "statement": "",
+            "topic": ""
+        }
+
+
+# =========================================================
+# CORRECTION DETECTION
+# =========================================================
+
+def detect_correction(user_input):
+
+    prompt = f"""
+You are a correction detector for an AI agent.
+
+Determine whether the user's message is correcting
+the agent's previous behavior or answer.
+
+Normal questions and normal statements are NOT corrections.
+
+Examples that are NOT corrections:
+
+"My name is Aprajita."
+
+"The PM of India is Narendra Modi."
+
+"I am learning Python."
+
+"What is Python?"
+
+"Explain database."
+
+Examples of corrections:
+
+"No, explain Python in very simple language."
+
+"Don't give such a long answer."
+
+"Next time give an example."
+
+"You misunderstood my question."
+
+"Explain this in Hindi."
+
+Return ONLY valid JSON.
+
+Format:
+
+{{
+    "is_correction": true,
+    "topic": "...",
+    "instruction": "..."
+}}
+
+OR
+
+{{
+    "is_correction": false,
+    "topic": "",
+    "instruction": ""
+}}
+
+User message:
+{user_input}
+"""
+
+    try:
+
+        response = chat(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        content = response["message"]["content"].strip()
+
+        content = content.replace("```json", "")
+        content = content.replace("```", "")
+        content = content.strip()
+
+        return json.loads(content)
+
+    except Exception:
+
+        return {
+            "is_correction": False,
+            "topic": "",
+            "instruction": ""
+        }
+
+
+# =========================================================
+# AI DECISION MAKER
+# =========================================================
+
+def ask_agent(user_input):
+
+    facts = get_facts()
+    knowledge = get_knowledge()
+
+    recent_memory = get_recent_memory()
+
+    knowledge_text = ""
+
+    for item in knowledge[-10:]:
+
+        knowledge_text += (
+            f"- {item.get('statement', '')} "
+            f"(topic: {item.get('topic', '')})\n"
+        )
+
+    facts_text = "\n".join(f"- {fact}" for fact in facts)
+
+    memory_text = ""
+
+    for item in recent_memory[-5:]:
+
+        memory_text += (
+            f"User: {item.get('user', '')}\n"
+            f"Agent: {item.get('agent', '')}\n"
+        )
+
+    prompt = f"""
+You are the decision-making brain of an AI agent.
+
+Your job is to decide which action should be used
+to answer the user's question.
+
+Available actions:
+
+1. calculator
+2. search
+3. memory
+4. knowledge
+5. answer
+
+Rules:
+
+calculator:
+Use for mathematical calculations.
+
+search:
+Use when the user asks for:
+- latest information
+- current information
+- recent information
+- today's information
+- live information
+- external information
+- changing information
+- information you are not confident about
+
+For current or latest information, DO NOT rely only
+on internal knowledge or old memory.
+
+memory:
+Use when the user asks about personal information
+that has been saved about the user.
+
+knowledge:
+Use when the answer can be found in the saved
+general knowledge provided by the user.
+
+answer:
+Use for normal stable general knowledge when
+web search is not necessary.
+
+Important:
+
+If a question is about a current or changing fact,
+prefer SEARCH even if saved knowledge contains an
+older answer.
+
+Saved personal facts:
+{facts_text}
+
+Saved general knowledge:
+{knowledge_text}
+
+Recent conversation:
+{memory_text}
+
+User question:
+{user_input}
+
+Return ONLY valid JSON.
+
+Format:
+
+{{
+    "action": "calculator",
+    "reason": "..."
+}}
+
+or
+
+{{
+    "action": "search",
+    "reason": "..."
+}}
+
+or
+
+{{
+    "action": "memory",
+    "reason": "..."
+}}
+
+or
+
+{{
+    "action": "knowledge",
+    "reason": "..."
+}}
+
+or
+
+{{
+    "action": "answer",
+    "reason": "..."
+}}
+"""
+
+    try:
+
+        response = chat(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        content = response["message"]["content"].strip()
+
+        content = content.replace("```json", "")
+        content = content.replace("```", "")
+        content = content.strip()
+
+        decision = json.loads(content)
+
+        return decision
+
+    except Exception:
+
+        return {
+            "action": "answer",
+            "reason": "Defaulting to general answer."
+        }
+
+
+# =========================================================
+# MEMORY RESPONSE
+# =========================================================
+
+def use_memory(user_input):
+
+    facts = get_facts()
+
+    knowledge = get_knowledge()
+
+    recent_memory = get_recent_memory()
+
+    memory_text = f"""
+Saved personal facts:
+
+{facts}
+
+Saved general knowledge:
+
+{knowledge}
+
+Recent conversations:
+
+{recent_memory}
+
+User question:
+
+{user_input}
+"""
+
+    prompt = f"""
+Answer the user's question using the available memory.
+
+Do not invent information.
+
+If the required information is not present,
+say that it is not available in memory.
+
+Memory:
+{memory_text}
+"""
+
+    try:
+
+        response = chat(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        return response["message"]["content"]
+
+    except Exception as e:
+
+        return f"Memory response failed: {e}"
+
+
+# =========================================================
+# KNOWLEDGE RESPONSE
+# =========================================================
+
+def use_knowledge(user_input):
+
+    results = search_knowledge(user_input)
+
+    if not results:
+
+        return "I could not find relevant information in my saved knowledge."
+
+    knowledge_text = ""
+
+    for item in results:
+
+        knowledge_text += (
+            f"Statement: {item.get('statement', '')}\n"
+            f"Topic: {item.get('topic', '')}\n\n"
+        )
+
+    prompt = f"""
+Answer the user's question using the saved knowledge below.
+
+Use only information that is relevant to the question.
+
+Do not invent information.
+
+Saved knowledge:
+
+{knowledge_text}
+
+User question:
+
+{user_input}
+
+Give a clear and simple answer.
+"""
+
+    try:
+
+        response = chat(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        return response["message"]["content"]
+
+    except Exception as e:
+
+        return f"Knowledge response failed: {e}"
+
+
+# =========================================================
+# FINAL RESPONSE GENERATOR
+# =========================================================
+
+def generate_response(
+    user_input,
+    tool_result="",
+    action="answer"
+):
+
+    corrections = get_corrections()
+
+    correction_text = ""
+
+    for correction in corrections:
+
+        correction_text += (
+            f"Topic: {correction.get('topic', '')}\n"
+            f"Instruction: {correction.get('instruction', '')}\n\n"
+        )
+
+    prompt = f"""
+You are the final response generator of an AI agent.
+
+User question:
+
+{user_input}
+
+Action used:
+
+{action}
+
+Information from tool:
+
+{tool_result}
+
+Saved corrections:
+
+{correction_text}
+
+Instructions:
+
+1. Give a clear and useful answer.
+2. Do not invent information.
+3. If web search information is provided, use that information.
+4. Do not claim something is current unless current information
+   was actually obtained from web search.
+5. Apply a saved correction ONLY if it clearly matches
+   the current question.
+6. Do not apply unrelated corrections.
+
+Example:
+
+Saved correction:
+"Explain Python in very simple language."
+
+Current question:
+"My name is Aprajita."
+
+Do NOT apply the Python correction.
+
+Current question:
+"What is Python?"
+
+Apply the Python correction.
+
+Answer the user naturally.
+"""
+
+    try:
+
+        response = chat(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+
+        return response["message"]["content"]
+
+    except Exception as e:
+
+        return f"Response generation failed: {e}"
+
+
+# =========================================================
+# STREAMLIT UI
+# =========================================================
 
 st.set_page_config(
-    page_title="Self-Learning AI Agent",
+    page_title="Self Learning AI Agent",
     page_icon="🤖",
-    layout="centered"
+    layout="wide"
 )
 
 
-# ============================================
-# CHAT HISTORY
-# ============================================
+st.title("🤖 Self-Learning AI Agent")
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+st.write(
+    "AI agent powered by Llama 3.2, Ollama, memory, "
+    "web search and learning."
+)
 
 
-# ============================================
+# =========================================================
 # SIDEBAR
-# ============================================
+# =========================================================
 
 with st.sidebar:
 
-    st.title("🤖 AI Agent")
+    st.header("🧠 Agent Memory")
 
-    st.write("### Agent Status")
-    st.success("🟢 Online")
-
-    st.write("### Available Tools")
-
-    st.write("🧮 Calculator")
-    st.write("🌐 Web Search")
-    st.write("🧠 Memory")
-    st.write("💬 General Answer")
-    st.write("📚 Learning")
-    st.write("✏️ Corrections")
-
-    st.divider()
-
-    if st.button("🧹 Clear Chat"):
-
-        st.session_state.messages = []
-
-        st.rerun()
-
-    st.divider()
-
-    # ========================================
-    # SAVED MEMORY
-    # ========================================
-
-    st.write("### Saved Memory")
-
-    memory = load_memory()
-
-    facts = memory.get("facts", [])
+    facts = get_facts()
 
     if facts:
+
+        st.subheader("Personal Facts")
 
         for fact in facts:
 
             st.write("•", fact)
 
-    else:
+    knowledge = get_knowledge()
 
-        st.write("No saved facts yet.")
+    if knowledge:
 
-    st.divider()
+        st.subheader("General Knowledge")
 
-    # ========================================
-    # SAVED CORRECTIONS
-    # ========================================
+        for item in knowledge[-10:]:
 
-    st.write("### Saved Corrections")
+            st.write(
+                "•",
+                item.get("statement", "")
+            )
 
     corrections = get_corrections()
 
     if corrections:
+
+        st.subheader("Learned Corrections")
 
         for correction in corrections:
 
@@ -102,26 +663,23 @@ with st.sidebar:
                 correction.get("instruction", "")
             )
 
-    else:
+    good_learning = get_good_learning()
 
-        st.write("No corrections yet.")
+    st.subheader("Learning Records")
 
-
-# ============================================
-# MAIN PAGE
-# ============================================
-
-st.title("🤖 Self-Learning AI Agent")
-
-st.write(
-    "Ask me a question and the AI will decide "
-    "how to handle it."
-)
+    st.write(
+        f"Successful interactions: {len(good_learning)}"
+    )
 
 
-# ============================================
-# SHOW PREVIOUS CHAT
-# ============================================
+# =========================================================
+# CHAT HISTORY
+# =========================================================
+
+if "messages" not in st.session_state:
+
+    st.session_state.messages = []
+
 
 for message in st.session_state.messages:
 
@@ -130,534 +688,49 @@ for message in st.session_state.messages:
         st.write(message["content"])
 
 
-# ============================================
-# JSON PARSER
-# ============================================
-
-def parse_json(text):
-
-    start = text.find("{")
-    end = text.rfind("}")
-
-    if start == -1 or end == -1:
-
-        return None
-
-    try:
-
-        return json.loads(
-            text[start:end + 1]
-        )
-
-    except json.JSONDecodeError:
-
-        return None
-
-
-# ============================================
-# CORRECTION DETECTOR
-# ============================================
-
-def detect_correction(user_input):
-
-    prompt = f"""
-You are the correction detector of a
-self-learning AI agent.
-
-User message:
-
-{user_input}
-
-Determine whether the user is correcting,
-changing, or giving a preference about
-how the AI should answer.
-
-Examples:
-
-"No, give me the definition instead."
-
-"That answer is wrong. Explain it with
-an example."
-
-"From now on, keep the answer short."
-
-"I want the definition, not my personal
-information."
-
-These are corrections.
-
-A normal question such as:
-
-"What is Python?"
-
-is NOT a correction.
-
-If this is a correction, return:
-
-{{
-    "is_correction": true,
-    "topic": "the topic being corrected",
-    "instruction": "what the AI should do differently"
-}}
-
-If this is NOT a correction, return:
-
-{{
-    "is_correction": false,
-    "topic": "",
-    "instruction": ""
-}}
-
-Return ONLY JSON.
-"""
-
-    response = chat(
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        format="json"
-    )
-
-    return parse_json(
-        response["message"]["content"]
-    )
-
-
-# ============================================
-# AI DECISION MAKER
-# ============================================
-
-def ask_agent(user_input):
-
-    memory = load_memory()
-
-    facts = memory.get("facts", [])
-
-    facts_text = "\n".join(
-        f"- {fact}"
-        for fact in facts
-    )
-
-    if not facts_text:
-
-        facts_text = "No saved facts."
-
-
-    # ----------------------------------------
-    # PREVIOUS CORRECTIONS
-    # ----------------------------------------
-
-    corrections = get_corrections(
-        limit=10
-    )
-
-    corrections_text = ""
-
-    for correction in corrections:
-
-        corrections_text += f"""
-Topic:
-{correction.get("topic", "")}
-
-Instruction:
-{correction.get("instruction", "")}
-
-"""
-
-
-    if not corrections_text:
-
-        corrections_text = "No saved corrections."
-
-
-    # ----------------------------------------
-    # PREVIOUS SUCCESSFUL LEARNING
-    # ----------------------------------------
-
-    good_examples = get_good_learning(
-        limit=5
-    )
-
-    learning_text = ""
-
-    for example in good_examples:
-
-        learning_text += f"""
-Previous successful interaction:
-
-User:
-{example.get("user", "")}
-
-Successful response:
-{example.get("agent_response", "")}
-
-"""
-
-
-    if not learning_text:
-
-        learning_text = (
-            "No previous successful examples."
-        )
-
-
-    prompt = f"""
-You are the decision-making brain of a
-self-learning AI agent.
-
-Available actions:
-
-calculator
-search
-memory
-answer
-
-Saved user facts:
-
-{facts_text}
-
-Saved corrections:
-
-{corrections_text}
-
-Previous successful examples:
-
-{learning_text}
-
-Current user request:
-
-{user_input}
-
-
-IMPORTANT RULES:
-
-1. Use calculator for mathematical
-   calculations.
-
-2. Use search for current, latest,
-   recent, or external information.
-
-3. Use memory ONLY when the user asks
-   about their personal information.
-
-4. Use answer for normal general
-   knowledge questions.
-
-5. Saved personal facts must NOT override
-   a general knowledge question.
-
-6. Saved corrections are important.
-
-7. If a saved correction clearly applies
-   to the current request, select the
-   appropriate action normally and allow
-   the final response generator to follow
-   that correction.
-
-8. Previous successful examples can help
-   improve the answer.
-
-Return ONLY JSON.
-
-Examples:
-
-{{"action":"memory","query":"What does the user like?"}}
-
-{{"action":"calculator","a":20,"operator":"+","b":30}}
-
-{{"action":"search","query":"latest Python version"}}
-
-{{"action":"answer"}}
-"""
-
-
-    response = chat(
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        format="json"
-    )
-
-    return response["message"]["content"]
-
-
-# ============================================
-# MEMORY
-# ============================================
-
-def use_memory(query):
-
-    memory = load_memory()
-
-    facts = memory.get("facts", [])
-
-    if not facts:
-
-        return (
-            "I don't have any saved "
-            "information about that."
-        )
-
-
-    facts_text = "\n".join(
-        f"- {fact}"
-        for fact in facts
-    )
-
-
-    prompt = f"""
-You are the memory retrieval system.
-
-Saved facts:
-
-{facts_text}
-
-User question:
-
-{query}
-
-Use ONLY the saved facts.
-
-Do not guess.
-
-Do not invent information.
-
-Answer directly and briefly.
-"""
-
-
-    response = chat(
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    )
-
-    return response["message"]["content"]
-
-
-# ============================================
-# FINAL RESPONSE
-# ============================================
-
-def generate_response(
-    user_input,
-    information
-):
-
-    corrections = get_corrections(
-        limit=10
-    )
-
-    corrections_text = ""
-
-    for correction in corrections:
-
-        topic = correction.get(
-            "topic",
-            ""
-        )
-
-        instruction = correction.get(
-            "instruction",
-            ""
-        )
-
-        corrections_text += f"""
-Topic:
-{topic}
-
-IMPORTANT USER INSTRUCTION:
-{instruction}
-
-"""
-
-
-    if not corrections_text:
-
-        corrections_text = "No saved corrections."
-
-
-    prompt = f"""
-You are the final response generator of
-a self-learning AI agent.
-
-User question:
-
-{user_input}
-
-
-Information available:
-
-{information}
-
-
-USER'S SAVED RESPONSE INSTRUCTIONS:
-
-{corrections_text}
-
-
-Your job is to answer the user's question.
-
-IMPORTANT RULES:
-
-1. First check whether any saved instruction
-   applies to the current question.
-
-2. If an instruction applies, you MUST
-   follow EVERY part of that instruction.
-
-3. Do NOT partially follow the instruction.
-
-4. Do NOT ignore any important part of it.
-
-5. If the instruction asks for simple
-   language, use simple language.
-
-6. If the instruction asks for an example,
-   you MUST include an actual example.
-
-7. If the instruction asks for both simple
-   language AND an example, you MUST do BOTH.
-
-8. If the instruction asks for a short answer,
-   keep the answer short.
-
-9. If the instruction asks for details,
-   provide enough explanation.
-
-10. If multiple instructions apply, follow
-    the most recent relevant instruction.
-
-11. If no instruction applies, answer normally.
-
-12. Never mention the saved instruction.
-
-13. Never mention memory.
-
-14. Never mention internal tools.
-
-15. Never mention evaluation.
-
-16. Never mention JSON.
-
-17. Never mention the agent architecture.
-
-18. Answer naturally and directly.
-
-
-IMPORTANT EXAMPLE:
-
-User question:
-
-What is Python?
-
-Saved instruction:
-
-Explain Python in very simple language
-with an example.
-
-The answer MUST look similar in structure
-to this:
-
-Python is a programming language that is
-easy to learn and is used to give
-instructions to a computer.
-
-For example:
-
-print("Hello")
-
-This tells Python to display Hello on
-the screen.
-
-The exact wording can be different,
-but BOTH the simple explanation and
-the example MUST be present.
-
-
-Now answer the actual user question.
-
-Return ONLY the final answer.
-"""
-
-
-    response = chat(
-        model=MODEL,
-        messages=[
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-    )
-
-    return response["message"]["content"]
-
-
-# ============================================
+# =========================================================
 # USER INPUT
-# ============================================
+# =========================================================
 
 user_input = st.chat_input(
-    "Ask something..."
+    "Ask me anything..."
 )
 
 
 if user_input:
 
-    # ----------------------------------------
-    # SAVE USER MESSAGE
-    # ----------------------------------------
+    # -----------------------------------------------------
+    # Show user message
+    # -----------------------------------------------------
 
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": user_input
-        }
-    )
-
+    st.session_state.messages.append({
+        "role": "user",
+        "content": user_input
+    })
 
     with st.chat_message("user"):
 
         st.write(user_input)
 
 
-    # ========================================
-    # CHECK FOR CORRECTION
-    # ========================================
+    # -----------------------------------------------------
+    # STEP 1: Check correction
+    # -----------------------------------------------------
 
-    correction = detect_correction(
-        user_input
-    )
+    correction = detect_correction(user_input)
 
 
-    if (
-        correction
-        and correction.get("is_correction") is True
-    ):
+    if correction.get("is_correction") is True:
 
         topic = correction.get(
             "topic",
             ""
-        )
+        ).strip()
 
         instruction = correction.get(
             "instruction",
             ""
-        )
-
+        ).strip()
 
         if topic and instruction:
 
@@ -666,182 +739,171 @@ if user_input:
                 instruction
             )
 
-
-            final_answer = (
-                "Got it. I have updated my "
-                "response preference."
+            agent_response = (
+                "Got it. I will remember this correction "
+                "and apply it when it is relevant."
             )
 
         else:
 
-            final_answer = (
-                "I understood that you want "
-                "to correct my previous answer."
+            agent_response = (
+                "I understood your correction, "
+                "but I could not save it properly."
             )
 
-
-    # ========================================
-    # NORMAL QUESTION
-    # ========================================
 
     else:
 
-        # ------------------------------------
-        # AI DECISION
-        # ------------------------------------
+        # -------------------------------------------------
+        # STEP 2: Extract general knowledge
+        # -------------------------------------------------
 
-        decision_text = ask_agent(
+        knowledge_result = extract_knowledge(
             user_input
         )
 
-        decision = parse_json(
-            decision_text
+        if knowledge_result.get("remember") is True:
+
+            statement = knowledge_result.get(
+                "statement",
+                ""
+            ).strip()
+
+            topic = knowledge_result.get(
+                "topic",
+                ""
+            ).strip()
+
+            if statement:
+
+                save_knowledge(
+                    statement,
+                    topic
+                )
+
+
+        # -------------------------------------------------
+        # STEP 3: Ask AI what to do
+        # -------------------------------------------------
+
+        decision = ask_agent(
+            user_input
+        )
+
+        action = decision.get(
+            "action",
+            "answer"
         )
 
 
-        # ------------------------------------
-        # EXECUTE ACTION
-        # ------------------------------------
+        # -------------------------------------------------
+        # STEP 4: Execute selected action
+        # -------------------------------------------------
 
-        if decision is None:
+        if action == "calculator":
 
-            final_answer = (
-                "I couldn't understand "
-                "my decision."
+            tool_result = (
+                "The calculator action was selected. "
+                "Use the calculator tool when the "
+                "question contains a mathematical expression."
             )
+
+            agent_response = generate_response(
+                user_input,
+                tool_result,
+                action
+            )
+
+
+        elif action == "search":
+
+            tool_result = search(
+                user_input
+            )
+
+            agent_response = generate_response(
+                user_input,
+                tool_result,
+                action
+            )
+
+
+        elif action == "memory":
+
+            tool_result = use_memory(
+                user_input
+            )
+
+            agent_response = generate_response(
+                user_input,
+                tool_result,
+                action
+            )
+
+
+        elif action == "knowledge":
+
+            tool_result = use_knowledge(
+                user_input
+            )
+
+            agent_response = generate_response(
+                user_input,
+                tool_result,
+                action
+            )
+
 
         else:
 
-            action = decision.get(
-                "action"
+            agent_response = generate_response(
+                user_input,
+                "",
+                "answer"
             )
 
 
-            # ================================
-            # CALCULATOR
-            # ================================
+        # -------------------------------------------------
+        # STEP 5: Evaluate response
+        # -------------------------------------------------
 
-            if action == "calculator":
-
-                result = calculator(
-                    decision["a"],
-                    decision["operator"],
-                    decision["b"]
-                )
-
-                final_answer = generate_response(
-                    user_input,
-                    f"The calculator returned: {result}"
-                )
+        evaluation = evaluate_response(
+            user_input,
+            agent_response
+        )
 
 
-            # ================================
-            # WEB SEARCH
-            # ================================
+        # -------------------------------------------------
+        # STEP 6: Save learning
+        # -------------------------------------------------
 
-            elif action == "search":
-
-                query = decision.get(
-                    "query",
-                    user_input
-                )
-
-                result = search(query)
-
-                final_answer = generate_response(
-                    user_input,
-                    result
-                )
+        save_learning(
+            user_input,
+            agent_response,
+            evaluation
+        )
 
 
-            # ================================
-            # MEMORY
-            # ================================
+        # -------------------------------------------------
+        # STEP 7: Save conversation
+        # -------------------------------------------------
 
-            elif action == "memory":
-
-                query = decision.get(
-                    "query",
-                    user_input
-                )
-
-                final_answer = use_memory(
-                    query
-                )
+        save_conversation(
+            user_input,
+            agent_response
+        )
 
 
-            # ================================
-            # GENERAL ANSWER
-            # ================================
-
-            else:
-
-                final_answer = generate_response(
-                    user_input,
-                    "No external tool was required."
-                )
-
-
-    # ========================================
-    # SELF EVALUATION
-    # ========================================
-
-    evaluation = evaluate_response(
-        user_input,
-        final_answer
-    )
-
-
-    # ========================================
-    # SAVE LEARNING
-    # ========================================
-
-    save_learning(
-        user_input,
-        final_answer,
-        evaluation
-    )
-
-
-    # ========================================
-    # SAVE CONVERSATION
-    # ========================================
-
-    save_conversation(
-        user_input,
-        final_answer
-    )
-
-
-    # ========================================
-    # SAVE ASSISTANT MESSAGE
-    # ========================================
-
-    st.session_state.messages.append(
-        {
-            "role": "assistant",
-            "content": final_answer
-        }
-    )
-
-
-    # ========================================
-    # SHOW ANSWER
-    # ========================================
+    # -----------------------------------------------------
+    # Show response
+    # -----------------------------------------------------
 
     with st.chat_message("assistant"):
 
-        st.write(final_answer)
+        st.write(agent_response)
 
 
-        if evaluation.get("good"):
-
-            st.caption(
-                "🧠 Learned from this interaction."
-            )
-
-        else:
-
-            st.caption(
-                "🔄 Interaction saved for improvement."
-            )
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": agent_response
+    })
